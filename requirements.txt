@@ -14,6 +14,11 @@ requests>=2.31.0
 # Machine Learning
 scikit-learn>=1.3.0
 joblib>=1.3.0
+scipy>=1.11.0
+
+# Enhanced ML Models (optional but recommended)
+xgboost>=2.0.0
+lightgbm>=4.0.0
 
 # Environment Variables
 python-dotenv>=1.0.0

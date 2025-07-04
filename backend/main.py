@@ -39,6 +39,18 @@ class ForexPredictionApp:
         # Calculate features
         logger.info("Calculating technical indicators...")
         df = self.feature_engineer.calculate_all_features(df)
+        
+        # Train ML model if not already trained
+        logger.info("Training ML model...")
+        try:
+            train_result = self.analyzer.ml_analyzer.train(df)
+            if train_result.get("status") == "success":
+                logger.info(f"ML Model trained successfully - Accuracy: {train_result.get('validation_accuracy', 0):.2%}")
+            else:
+                logger.warning(f"ML Model training failed: {train_result}")
+        except Exception as e:
+            logger.error(f"ML Model training error: {str(e)}")
+            # Continue without ML model
 
         # Run analysis
         logger.info("Analyzing market conditions...")

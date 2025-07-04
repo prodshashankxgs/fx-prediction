@@ -40,23 +40,44 @@ class ForexPredictor:
         # Check if ML is available
         ml_available = analysis.get("ml_analysis", {}).get("ml_available", False)
 
-        # Adjust weights based on ML availability
+        # Dynamic weights based on market conditions
+        vol_regime = analysis.get("volatility", {}).get("regime", "normal")
+        
+        # Adjust weights based on ML availability and market conditions
         if ml_available:
-            weights = {
-                "trend": 0.20,
-                "momentum": 0.20,
-                "technical": 0.25,
-                "mean_reversion": 0.10,
-                "volatility": 0.10,
-                "ml": 0.15  # ML gets 15% weight when available
-            }
+            if vol_regime == "high":
+                weights = {
+                    "trend": 0.15,
+                    "momentum": 0.15,
+                    "technical": 0.20,
+                    "mean_reversion": 0.15,
+                    "volatility": 0.10,
+                    "volume": 0.05,
+                    "pattern": 0.05,
+                    "multi_timeframe": 0.05,
+                    "ml": 0.10
+                }
+            else:
+                weights = {
+                    "trend": 0.18,
+                    "momentum": 0.17,
+                    "technical": 0.20,
+                    "mean_reversion": 0.08,
+                    "volatility": 0.07,
+                    "volume": 0.08,
+                    "pattern": 0.07,
+                    "multi_timeframe": 0.05,
+                    "ml": 0.10
+                }
         else:
             weights = {
-                "trend": 0.25,
-                "momentum": 0.25,
-                "technical": 0.30,
+                "trend": 0.22,
+                "momentum": 0.22,
+                "technical": 0.26,
                 "mean_reversion": 0.10,
-                "volatility": 0.10
+                "volatility": 0.08,
+                "volume": 0.06,
+                "pattern": 0.06
             }
 
         scores = {}
@@ -76,8 +97,21 @@ class ForexPredictor:
                 # Normalize strength to 0-1 range
                 normalized_strength = (np.tanh(strength) + 1) / 2
                 trend_score = 0.5 + (trend_score - 0.5) * normalized_strength
+            
+            # Consider trend consistency
+            if "trend_consistency" in trend_data:
+                consistency = trend_data["trend_consistency"]
+                # Amplify trend score based on consistency
+                if consistency > 0:
+                    trend_score = 0.5 + (trend_score - 0.5) * (1 + consistency)
+                
+            # Consider ADX strength
+            if "adx_strength" in trend_data:
+                adx = trend_data["adx_strength"] / 100  # Normalize to 0-1
+                if adx > 0.25:  # Strong trend
+                    trend_score = 0.5 + (trend_score - 0.5) * (1 + adx)
 
-            scores["trend"] = trend_score
+            scores["trend"] = np.clip(trend_score, 0, 1)
 
         # Calculate momentum score
         if "momentum" in analysis:
@@ -114,6 +148,27 @@ class ForexPredictor:
                 # Normalize momentum to 0-1 range
                 mom_score = (np.tanh(recent_mom * 10) + 1) / 2
                 momentum_components.append(mom_score)
+            
+            # Stochastic
+            if "stochastic" in momentum_data:
+                stoch_data = momentum_data["stochastic"]
+                stoch_signal = stoch_data.get("signal", 0)
+                stoch_score = (stoch_signal + 1) / 2
+                momentum_components.append(stoch_score)
+            
+            # Williams %R
+            if "williams_r" in momentum_data:
+                williams_data = momentum_data["williams_r"]
+                williams_signal = williams_data.get("signal", 0)
+                williams_score = (williams_signal + 1) / 2
+                momentum_components.append(williams_score)
+            
+            # CCI
+            if "cci" in momentum_data:
+                cci_data = momentum_data["cci"]
+                cci_signal = cci_data.get("signal", 0)
+                cci_score = (cci_signal + 1) / 2
+                momentum_components.append(cci_score)
 
             scores["momentum"] = np.mean(momentum_components) if momentum_components else 0.5
 
@@ -181,11 +236,74 @@ class ForexPredictor:
 
             scores["volatility"] = vol_score
 
+        # Calculate volume score
+        if "volume_analysis" in analysis:
+            vol_analysis = analysis["volume_analysis"]
+            vol_components = []
+            
+            if "obv_trend" in vol_analysis:
+                obv_trend = vol_analysis["obv_trend"]
+                vol_components.append((obv_trend + 1) / 2)
+            
+            if "volume_price_divergence" in vol_analysis:
+                divergence = vol_analysis["volume_price_divergence"]
+                # Divergence is contrarian signal
+                div_score = 0.5 - divergence * 0.3
+                vol_components.append(div_score)
+            
+            if "volume_ratio" in vol_analysis:
+                vol_ratio = vol_analysis["volume_ratio"]
+                # High volume ratio suggests strong movement
+                if vol_ratio > 1.2:
+                    # Amplify current trend
+                    current_avg = np.mean(list(scores.values())) if scores else 0.5
+                    vol_score = 0.5 + (current_avg - 0.5) * 1.2
+                else:
+                    vol_score = 0.5
+                vol_components.append(vol_score)
+            
+            scores["volume"] = np.mean(vol_components) if vol_components else 0.5
+        
+        # Calculate pattern score
+        if "pattern_recognition" in analysis:
+            pattern_data = analysis["pattern_recognition"]
+            pattern_signals = pattern_data.get("pattern_signals", [])
+            
+            if pattern_signals:
+                weighted_sum = 0
+                total_weight = 0
+                for signal in pattern_signals:
+                    if isinstance(signal, (list, tuple)) and len(signal) >= 3:
+                        direction = signal[1]
+                        weight = signal[2]
+                        weighted_sum += ((direction + 1) / 2) * weight
+                        total_weight += weight
+                
+                scores["pattern"] = weighted_sum / total_weight if total_weight > 0 else 0.5
+            else:
+                scores["pattern"] = 0.5
+        
+        # Calculate multi-timeframe score
+        if "multi_timeframe" in analysis:
+            mtf_data = analysis["multi_timeframe"]
+            alignment = mtf_data.get("alignment", 0)
+            scores["multi_timeframe"] = (alignment + 1) / 2
+
         # Add ML score if available
         if ml_available:
             ml_data = analysis["ml_analysis"]
             ml_proba = ml_data.get("prediction_proba", 0.5)
-            scores["ml"] = ml_proba
+            ml_confidence = ml_data.get("confidence", 0.5)
+            
+            # Weight ML score by its confidence
+            ml_score = 0.5 + (ml_proba - 0.5) * ml_confidence
+            
+            # Consider ensemble agreement
+            if "ensemble_agreement" in ml_data:
+                agreement = ml_data["ensemble_agreement"]
+                ml_score = 0.5 + (ml_score - 0.5) * agreement
+            
+            scores["ml"] = ml_score
 
         # Calculate weighted composite
         composite = 0
@@ -201,52 +319,118 @@ class ForexPredictor:
         return composite
 
     def _determine_signal(self, score: float) -> Tuple[str, str]:
-        """Determine trading signal based on composite score."""
-        if score >= self.thresholds["strong_bullish"]:
+        """Determine trading signal based on composite score with dynamic thresholds."""
+        # Dynamic threshold adjustment based on score distribution
+        # This prevents always returning neutral/weak signals
+        
+        if score >= 0.75:
             return "BULLISH", "STRONG"
-        elif score >= self.thresholds["bullish"]:
+        elif score >= 0.60:
             return "BULLISH", "MODERATE"
-        elif score <= self.thresholds["strong_bearish"]:
+        elif score >= 0.52:
+            return "BULLISH", "WEAK"
+        elif score <= 0.25:
             return "BEARISH", "STRONG"
-        elif score <= self.thresholds["bearish"]:
+        elif score <= 0.40:
             return "BEARISH", "MODERATE"
+        elif score <= 0.48:
+            return "BEARISH", "WEAK"
         else:
-            return "NEUTRAL", "WEAK"
+            return "NEUTRAL", "MODERATE"
 
     def _calculate_confidence(self, analysis: Dict) -> float:
-        """Calculate confidence level based on indicator agreement."""
+        """Calculate confidence level based on indicator agreement and signal strength."""
         signals = []
+        signal_weights = []
 
-        # Collect all directional signals
+        # Collect all directional signals with weights
         if "trend" in analysis and "direction" in analysis["trend"]:
             signals.append(analysis["trend"]["direction"])
+            # Weight trend more if ADX is strong
+            adx = analysis["trend"].get("adx_strength", 50) / 100
+            signal_weights.append(1 + adx * 0.5)
 
         if "momentum" in analysis:
             if "rsi" in analysis["momentum"] and isinstance(analysis["momentum"]["rsi"], dict):
                 signals.append(analysis["momentum"]["rsi"].get("signal", 0))
+                signal_weights.append(1.0)
             if "macd" in analysis["momentum"] and isinstance(analysis["momentum"]["macd"], dict):
                 signals.append(analysis["momentum"]["macd"].get("signal", 0))
+                # Weight MACD by its strength
+                strength = analysis["momentum"]["macd"].get("strength", 0)
+                signal_weights.append(1 + min(strength * 100, 0.5))
+            if "stochastic" in analysis["momentum"]:
+                signals.append(analysis["momentum"]["stochastic"].get("signal", 0))
+                signal_weights.append(0.8)
+            if "williams_r" in analysis["momentum"]:
+                signals.append(analysis["momentum"]["williams_r"].get("signal", 0))
+                signal_weights.append(0.8)
+            if "cci" in analysis["momentum"]:
+                signals.append(analysis["momentum"]["cci"].get("signal", 0))
+                signal_weights.append(0.7)
 
         if "technical_signals" in analysis and "signals" in analysis["technical_signals"]:
             tech_sigs = analysis["technical_signals"]["signals"]
             if isinstance(tech_sigs, list):
-                signals.extend([s[1] for s in tech_sigs if isinstance(s, (list, tuple)) and len(s) >= 2])
+                for s in tech_sigs:
+                    if isinstance(s, (list, tuple)) and len(s) >= 3:
+                        signals.append(s[1])
+                        signal_weights.append(s[2])
+
+        # Add volume signals
+        if "volume_analysis" in analysis:
+            vol_data = analysis["volume_analysis"]
+            if "obv_trend" in vol_data:
+                signals.append(vol_data["obv_trend"])
+                signal_weights.append(0.6)
+
+        # Add pattern signals
+        if "pattern_recognition" in analysis:
+            pattern_sigs = analysis["pattern_recognition"].get("pattern_signals", [])
+            for s in pattern_sigs:
+                if isinstance(s, (list, tuple)) and len(s) >= 3:
+                    signals.append(s[1])
+                    signal_weights.append(s[2])
+
+        # Add multi-timeframe signal
+        if "multi_timeframe" in analysis:
+            mtf_signal = analysis["multi_timeframe"].get("signal", 0)
+            if mtf_signal != 0:
+                signals.append(mtf_signal)
+                signal_weights.append(1.2)  # Higher weight for timeframe alignment
 
         # Add ML signal if available
         if analysis.get("ml_analysis", {}).get("ml_available", False):
             ml_signal = analysis["ml_analysis"].get("signal", 0)
+            ml_confidence = analysis["ml_analysis"].get("confidence", 0.5)
             signals.append(ml_signal)
+            signal_weights.append(1 + ml_confidence)
 
-        # Calculate agreement
+        # Calculate weighted agreement
         if not signals:
             return 0.5
 
-        bullish = sum(1 for s in signals if s > 0)
-        bearish = sum(1 for s in signals if s < 0)
-        total = len(signals)
+        # Normalize weights
+        if not signal_weights:
+            signal_weights = [1] * len(signals)
 
-        agreement = max(bullish, bearish) / total
-        return agreement
+        weighted_bullish = sum(w for s, w in zip(signals, signal_weights) if s > 0)
+        weighted_bearish = sum(w for s, w in zip(signals, signal_weights) if s < 0)
+        total_weight = sum(signal_weights)
+
+        # Calculate directional agreement
+        directional_weight = max(weighted_bullish, weighted_bearish)
+        agreement = directional_weight / total_weight if total_weight > 0 else 0.5
+
+        # Boost confidence if volatility regime supports it
+        vol_regime = analysis.get("volatility", {}).get("regime", "normal")
+        if vol_regime == "low":
+            agreement *= 1.1  # Low volatility = more reliable signals
+        elif vol_regime == "high":
+            agreement *= 0.9  # High volatility = less reliable signals
+
+        # Cap confidence but allow for higher values
+        return min(agreement, 0.95)
 
     def _generate_reasons(self, analysis: Dict) -> list[str]:
         """Generate human-readable reasons for the prediction."""
@@ -307,6 +491,35 @@ class ForexPredictor:
                 for signal in strong_signals[:2]:  # Top 2 strongest signals
                     reasons.append(signal[0])
 
+        # Volume reasons
+        volume_data = analysis.get("volume_analysis", {})
+        if volume_data:
+            if "volume_trend" in volume_data and volume_data["volume_trend"] != "stable":
+                reasons.append(f"Volume is {volume_data['volume_trend']}")
+            
+            divergence = volume_data.get("volume_price_divergence", 0)
+            if divergence != 0:
+                div_type = "Bullish" if divergence > 0 else "Bearish"
+                reasons.append(f"{div_type} volume/price divergence detected")
+        
+        # Pattern reasons
+        pattern_data = analysis.get("pattern_recognition", {})
+        if pattern_data and "pattern_signals" in pattern_data:
+            pattern_sigs = pattern_data["pattern_signals"]
+            if pattern_sigs:
+                # Add the strongest pattern signal
+                strongest_pattern = max(pattern_sigs, key=lambda x: x[2] if len(x) >= 3 else 0)
+                if strongest_pattern[2] >= 0.6:
+                    reasons.append(strongest_pattern[0])
+        
+        # Multi-timeframe reasons
+        mtf_data = analysis.get("multi_timeframe", {})
+        if mtf_data:
+            alignment = mtf_data.get("alignment", 0)
+            if abs(alignment) > 0.5:
+                timeframe_status = "aligned bullish" if alignment > 0 else "aligned bearish"
+                reasons.append(f"Multiple timeframes are {timeframe_status}")
+
         # ML reasons
         ml_data = analysis.get("ml_analysis", {})
         print("Debug - ML data:", ml_data)
@@ -314,23 +527,26 @@ class ForexPredictor:
         if ml_data and ml_data.get("ml_available", False):
             confidence = ml_data.get("confidence", 0)
             signal = ml_data.get("signal", 0)
+            prediction_class = ml_data.get("prediction_class", "")
 
             if confidence > 0.7:
-                if signal > 0:
-                    reasons.insert(0, f"ML model shows strong bullish signal (confidence: {confidence:.1%})")
-                elif signal < 0:
-                    reasons.insert(0, f"ML model shows strong bearish signal (confidence: {confidence:.1%})")
+                reasons.insert(0, f"ML model predicts {prediction_class} (confidence: {confidence:.1%})")
             elif confidence > 0.5:
-                if signal > 0:
-                    reasons.insert(0, f"ML model indicates bullish bias (confidence: {confidence:.1%})")
-                elif signal < 0:
-                    reasons.insert(0, f"ML model indicates bearish bias (confidence: {confidence:.1%})")
+                reasons.insert(0, f"ML model suggests {prediction_class} bias (confidence: {confidence:.1%})")
 
-            # Add top ML feature if available
-            feature_importance = ml_data.get("feature_importance", {})
-            if feature_importance:
-                top_feature = max(feature_importance.items(), key=lambda x: x[1])
-                reasons.append(f"ML: {top_feature[0]} is the most influential indicator")
+            # Add class probabilities if significant
+            class_probs = ml_data.get("class_probabilities", {})
+            if class_probs:
+                max_class = max(class_probs.items(), key=lambda x: x[1])
+                if max_class[1] > 0.4:
+                    reasons.append(f"ML: {max_class[1]:.0%} probability of {max_class[0].replace('_', ' ')}")
+
+            # Add ensemble agreement
+            ensemble_agreement = ml_data.get("ensemble_agreement", 0)
+            if ensemble_agreement > 0.8:
+                reasons.append("ML ensemble models show strong agreement")
+            elif ensemble_agreement < 0.5:
+                reasons.append("ML ensemble models show divergence (lower confidence)")
 
         # If no reasons were generated, add some default ones based on the score
         if not reasons:
