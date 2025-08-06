@@ -235,6 +235,7 @@ def create_forex_charts(df: pl.DataFrame, pair: str, prediction=None):
     fig.update_xaxes(title_text="Date", row=4, col=1)
 
     return fig
+    print("Forex charts created successfully.")
 
 
 def create_prediction_gauge(prediction):
